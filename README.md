@@ -36,11 +36,14 @@ is the Steam client's per-game **Properties > Foveated Rendering** checkbox, whi
   and 12.46 ms with the app's own level. That is a 2 % spread, with high the slowest. The scene's cost is
   most likely geometry and shadow passes, which foveation does not reduce. Other scenes may gain more; we
   have not measured one.
-- **With sharpening on, the app's GPU time per frame rose by about 5 ms on the Frame (a first reading).** In the same test field,
-  at the Frame's 1728x1728 per eye in sRGB, the median GPU time per frame went from 13.44 ms with sharpening off to
-  18.70 ms at `sharpen = 0.7`. That is one pair of one-minute runs, not interleaved, with the headset on a stand,
-  so treat it as a first reading. That scene already ran at half rate (45 of 90 fps) either way. For an app that
-  just makes 90 fps, this is enough to drop it to half rate.
+- **Sharpening costs about 5 ms of GPU time per frame on the Frame.** In the same test field, at the Frame's
+  1728x1728 per eye in sRGB, with the headset on a stand, we ran five one-minute runs in the order off, 0.7,
+  off, 0.7, 1.0. The median GPU time per frame was 13.99 and 14.03 ms with sharpening off, 16.14 and 18.81 ms
+  at `sharpen = 0.7`, and 18.92 ms at `1.0`. The first 0.7 run's median was lower, but its 90th percentile
+  (20.0 ms) matched the others. The cost does not depend on the strength, as expected: RCAS runs the same
+  pass whatever the dial says. The scene ran at half rate (45 of 90 fps) in every run. For an app that just
+  makes 90 fps, this is enough to drop it to half rate. The figure is the app's own GPU timer, which may not
+  see all of a pass submitted on its queue.
 - **Not judged yet:** how sharpening looks on the Frame.
 
 ## Install
