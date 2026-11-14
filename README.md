@@ -7,8 +7,8 @@ build for x86 apps run through FEX). It sits between an OpenXR app and the runti
 its config file asks for, per app. With no config file, every call passes straight through.
 
 **Status: early.** All tests pass off the headset (see "Tests"). On a Frame, the layer loads into native
-OpenXR apps and the foveation level reaches the runtime. Resolution override and sharpening have been
-tested off the headset only. Expect rough edges and report them.
+OpenXR apps, the foveation level reaches the runtime, and sharpening runs on the app's swapchains (its cost is
+below). Resolution override has been tested off the headset only. Expect rough edges and report them.
 
 ## What it does
 
@@ -36,7 +36,12 @@ is the Steam client's per-game **Properties > Foveated Rendering** checkbox, whi
   and 12.46 ms with the app's own level. That is a 2 % spread, with high the slowest. The scene's cost is
   most likely geometry and shadow passes, which foveation does not reduce. Other scenes may gain more; we
   have not measured one.
-- **Not measured yet:** the GPU cost of sharpening on the Frame, and how sharpening looks there.
+- **With sharpening on, the app's GPU time per frame rose by about 5 ms on the Frame (a first reading).** In the same test field,
+  at the Frame's 1728x1728 per eye in sRGB, the median GPU time per frame went from 13.44 ms with sharpening off to
+  18.70 ms at `sharpen = 0.7`. That is one pair of one-minute runs, not interleaved, with the headset on a stand,
+  so treat it as a first reading. That scene already ran at half rate (45 of 90 fps) either way. For an app that
+  just makes 90 fps, this is enough to drop it to half rate.
+- **Not judged yet:** how sharpening looks on the Frame.
 
 ## Install
 
