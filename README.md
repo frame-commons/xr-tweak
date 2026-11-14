@@ -7,8 +7,8 @@ build for x86 apps run through FEX). It sits between an OpenXR app and the runti
 its config file asks for, per app. With no config file, every call passes straight through.
 
 **Status: early.** All tests pass off the headset (see "Tests"). On a Frame, the layer loads into native
-OpenXR apps, the foveation level reaches the runtime, and sharpening runs on the app's swapchains (its cost is
-below). Resolution override has been tested off the headset only. Expect rough edges and report them.
+OpenXR apps, the foveation level reaches the runtime, sharpening runs on the app's swapchains, and resolution override changes
+the app's render size. Expect rough edges and report them.
 
 ## What it does
 
@@ -36,14 +36,13 @@ is the Steam client's per-game **Properties > Foveated Rendering** checkbox, whi
   and 12.46 ms with the app's own level. That is a 2 % spread, with high the slowest. The scene's cost is
   most likely geometry and shadow passes, which foveation does not reduce. Other scenes may gain more; we
   have not measured one.
-- **Sharpening costs about 5 ms of GPU time per frame on the Frame.** In the same test field, at the Frame's
-  1728x1728 per eye in sRGB, with the headset on a stand, we ran five one-minute runs in the order off, 0.7,
-  off, 0.7, 1.0. The median GPU time per frame was 13.99 and 14.03 ms with sharpening off, 16.14 and 18.81 ms
-  at `sharpen = 0.7`, and 18.92 ms at `1.0`. The first 0.7 run's median was lower, but its 90th percentile
-  (20.0 ms) matched the others. The cost does not depend on the strength, as expected: RCAS runs the same
-  pass whatever the dial says. The scene ran at half rate (45 of 90 fps) in every run. For an app that just
-  makes 90 fps, this is enough to drop it to half rate. The figure is the app's own GPU timer, which may not
-  see all of a pass submitted on its queue.
+- **Sharpening's GPU cost on the Frame is not measured yet.** The app's own GPU timer cannot see it: in
+  one session, `sharpen = 0.7` read 13.3 ms per frame, as low as runs with sharpening off on another night
+  (14.0 ms). On other runs the same setting read about 5 ms more. The layer now times its own pass and logs
+  it (see "Logs and privacy"); that reading is pending.
+- **Resolution override and sharpening with foveation run on the Frame.** At `scale = 0.8` and `1.2` the
+  app's swapchains became 1382 and 2074 px per eye (from 1728), and with `foveation = high` the level
+  rewrite and sharpening both ran, with no errors. How the periphery looks with both on is not judged yet.
 - **Not judged yet:** how sharpening looks on the Frame.
 
 ## Install
@@ -117,8 +116,8 @@ the release is forwarded.
 - Alpha passes through unchanged, so a passthrough app's room mask survives.
 - Any Vulkan error turns sharpening off for the rest of that session and logs why; the app carries on.
 - Not supported: OpenGL/GLES sessions (logged, no sharpening), MSAA swapchains, cube maps, mip chains.
-- Sharpening on top of foveation is untested: RCAS over low-density foveation tiles may make the
-  periphery blockier. If it does, use `sharpen = 0` for that app.
+- Sharpening on top of foveation runs, but how it looks is untested: RCAS over low-density foveation
+  tiles may make the periphery blockier. If it does, use `sharpen = 0` for that app.
 
 **Foveation.** For an app that enabled `XR_FB_foveation`, every `xrCreateFoveationProfileFB` is forwarded
 with the configured `XrFoveationLevelFB` in place of the app's. The app's structs are never written: the
@@ -135,7 +134,9 @@ found Valve's layer (`valve_fdm=above|below|absent`), and `bin/xr-tweak apps` sh
 ## Logs and privacy
 
 xr-tweak writes one line when an app starts (its name, engine, the sections that matched and the values
-applied) and one line per notable event. Nothing per frame. The lines go to stderr and to
+applied) and one line per notable event. Nothing per frame. While it sharpens, it also writes one line a
+minute per swapchain (and one when the swapchain goes) with its own pass's GPU time, measured with Vulkan
+timestamp queries: `sharpen gpu 1728x1728 x2: n=… over 60 s, median … ms, p90 … ms`. The lines go to stderr and to
 `~/.local/state/xr-tweak/xr-tweak.log`, which is not rotated; delete it whenever you like. That is
 everything it writes. **It sends nothing over the network and has no telemetry.**
 
@@ -153,7 +154,7 @@ and reads it back. It checks:
 
 - resolution: scaling, clamping to the runtime's maximum, per-app sections over `[default]`;
 - sharpening on UNORM and on a two-layer sRGB array: the image changes, edges get steeper without
-  widening, plateaus and alpha are untouched, and ringing stays small;
+  widening, plateaus and alpha are untouched, and ringing stays small; the pass's own GPU time is logged;
 - controls that must come back byte-identical: no config, quad-layer-only swapchains,
   `XR_TWEAK_DISABLE`, `enabled = 0`, and after uninstall;
 - a second manifest pointing at the other arch's library: the loader skips it and the app still runs;

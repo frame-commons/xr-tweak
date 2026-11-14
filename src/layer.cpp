@@ -33,7 +33,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -98,7 +100,29 @@ struct Swapchain {
     std::deque<uint32_t> acquired;
     SharpenChainPtr chain;
     bool chainFailed = false;
+    std::vector<double> gpuMs;             // our pass's GPU time per release since the last "sharpen gpu" line
+    std::chrono::steady_clock::time_point gpuSince{};
 };
+
+// One line per sharpened swapchain per minute (and one when it goes): our own pass's GPU time,
+// measured with timestamp queries around its command buffer -- not the app's frame time.
+void log_line(const char *fmt, ...);
+void log_gpu(const std::string &app, Swapchain *sc, bool last) {
+    if (!sc->chain) return;
+    std::vector<double> more = sharpen_chain_take_gpu_ms(sc->chain.get());
+    sc->gpuMs.insert(sc->gpuMs.end(), more.begin(), more.end());
+    auto now = std::chrono::steady_clock::now();
+    if (sc->gpuSince == std::chrono::steady_clock::time_point{}) sc->gpuSince = now;
+    double secs = std::chrono::duration<double>(now - sc->gpuSince).count();
+    if (sc->gpuMs.empty() || (!last && secs < 60)) return;
+    std::vector<double> v = sc->gpuMs;
+    std::sort(v.begin(), v.end());
+    log_line("app=\"%s\" sharpen gpu %ux%u x%u: n=%zu over %.0f s, median %.3f ms, p90 %.3f ms, max %.3f ms%s",
+             app.c_str(), sc->info.width, sc->info.height, sc->info.arraySize, v.size(), secs, v[v.size() / 2],
+             v[(v.size() * 9) / 10], v.back(), last ? " (last)" : "");
+    sc->gpuMs.clear();
+    sc->gpuSince = now;
+}
 
 std::map<XrInstance, std::unique_ptr<Instance>> g_instances;
 std::map<XrSession, std::unique_ptr<Session>> g_sessions;
@@ -282,6 +306,7 @@ XRAPI_ATTR XrResult XRAPI_CALL hook_DestroySession(XrSession session) {
             next = in->next.DestroySession;
             for (auto it = g_swapchains.begin(); it != g_swapchains.end();) {
                 if (it->second->session == session) {
+                    log_gpu(in->app, it->second.get(), true);
                     it->second->chain.reset();
                     it = g_swapchains.erase(it);
                 } else ++it;
@@ -338,6 +363,7 @@ XRAPI_ATTR XrResult XRAPI_CALL hook_DestroySwapchain(XrSwapchain swapchain) {
         if (!in) return XR_ERROR_HANDLE_INVALID;
         next = in->next.DestroySwapchain;
         if (sc) {
+            log_gpu(in->app, sc, true);
             sc->chain.reset();
             g_swapchains.erase(swapchain);
         }
@@ -424,6 +450,7 @@ XRAPI_ATTR XrResult XRAPI_CALL hook_ReleaseSwapchainImage(XrSwapchain swapchain,
                     log_line("app=\"%s\" sharpen failed (%s); off for the rest of this session", in->app.c_str(),
                              err.c_str());
                 }
+                if (sc->chain) log_gpu(in->app, sc, false);
             }
         }
     }

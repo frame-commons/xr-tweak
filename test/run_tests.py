@@ -12,6 +12,7 @@ step gets steeper, nothing rings past 3 % of the step height, the flat plateaus 
 Every positive case has a control that must come back byte-identical (memory a-check-that-cannot-fail).
 """
 import json
+import re
 import os
 import pathlib
 import subprocess
@@ -266,6 +267,11 @@ def main():
           and not (res["app_usage"] & TRANSFER_SRC))
     sharpened("E sharpen UNORM", res["layers"][0])
     check("E sharpen: log says sharpening", "sharpening a 48x8 x1 swapchain" in e.log(), e.log())
+    # E2. our own pass is timed: one "sharpen gpu" line when the swapchain goes, counting the passes read back
+    e.app("--format", "37", "--frames", "12")
+    m = re.findall(r"sharpen gpu 48x8 x1: n=(\d+) over \d+ s, median ([\d.]+) ms, p90 ([\d.]+) ms.*\(last\)", e.log())
+    check("E2 sharpen gpu: a last line with passes timed", bool(m) and int(m[-1][0]) >= 1, e.log()[-600:])
+    check("E2 sharpen gpu: median <= p90", bool(m) and float(m[-1][1]) <= float(m[-1][2]), str(m[-1:]))
 
     # F. sRGB, two-layer array (multiview); layer 1 is the mirrored edge
     res, _ = e.app("--format", "43", "--layers", "2")

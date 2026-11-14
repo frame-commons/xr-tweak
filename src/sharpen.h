@@ -42,4 +42,9 @@ SharpenChainPtr sharpen_chain_create(SharpenDevice *dev, VkFormat format, uint32
 // Sharpen images[index] in place. strength 0..1. Returns VK_SUCCESS or the failing call's result.
 VkResult sharpen_apply(SharpenDevice *dev, SharpenChain *chain, uint32_t index, float strength, std::string *err);
 
+// GPU time of each finished pass (ms, start to end of our command buffer, from timestamp queries),
+// collected since the last call; empty if the queue family cannot time. A pass is read back when its
+// image index comes round again, so the last few of a session are never counted.
+std::vector<double> sharpen_chain_take_gpu_ms(SharpenChain *chain);
+
 bool sharpen_format_is_srgb(VkFormat f);
