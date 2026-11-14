@@ -36,10 +36,16 @@ is the Steam client's per-game **Properties > Foveated Rendering** checkbox, whi
   and 12.46 ms with the app's own level. That is a 2 % spread, with high the slowest. The scene's cost is
   most likely geometry and shadow passes, which foveation does not reduce. Other scenes may gain more; we
   have not measured one.
-- **Sharpening's GPU cost on the Frame is not measured yet.** The app's own GPU timer cannot see it: in
-  one session, `sharpen = 0.7` read 13.3 ms per frame, as low as runs with sharpening off on another night
-  (14.0 ms). On other runs the same setting read about 5 ms more. The layer now times its own pass and logs
-  it (see "Logs and privacy"); that reading is pending.
+- **The sharpening pass takes a median 2.3 ms of GPU time per frame on the Frame, but the app pays about
+  4.5 ms.** Measured with the layer's own timestamps (see "Logs and privacy") in the same test field, on a
+  stand, at 1728x1728 per eye in sRGB, both eyes in one pass: median 2.32, 2.36 and 2.35 ms in three
+  one-minute runs, p90 about 7 ms. The strength makes no difference. At `scale = 1.2` (2074x2074) the
+  median was 8.7 ms, far more than the 1.44 times the pixels would explain. The timestamps are wall time on
+  a GPU the app and the compositor share, so they include any time our pass waits behind other work.
+  The app's own GPU timer rose more than our pass takes, from 13.7 ms per frame with sharpening off to
+  18.2-18.5 ms with it on, in four of five sessions; in one session it did not rise at all. We have not
+  found out why. The scene ran at half rate (45 of 90 fps) either way. For an app that just makes 90 fps,
+  sharpening is enough to drop it to half rate.
 - **Resolution override and sharpening with foveation run on the Frame.** At `scale = 0.8` and `1.2` the
   app's swapchains became 1382 and 2074 px per eye (from 1728), and with `foveation = high` the level
   rewrite and sharpening both ran, with no errors. How the periphery looks with both on is not judged yet.
