@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""xr-tweak — per-app OpenXR settings for the Steam Frame (an OpenXR Toolkit equivalent).
+
+Drives the xr-tweak API layer: an implicit OpenXR layer that, per app, overrides
+the recommended render resolution, applies RCAS sharpening to the projection layer, and sets the
+foveation level of apps that use XR_FB_foveation themselves. LOCAL ONLY:
+every verb acts on the machine it runs on (no ssh, no lease) — run it ON the headset to change the
+headset. Nothing here launches an app or touches a running one; settings are read at app start.
+
+  xr-tweak status [--json]                 installed? which .so, arch, config, kill switch, last log
+  xr-tweak install [--lib PATH] [--json]   copy the layer + write the implicit-layer manifest
+  xr-tweak uninstall [--json]              remove both (config and log are kept)
+  xr-tweak show [APP] [--json]             effective settings for APP (default section if omitted)
+  xr-tweak set APP key=value ...           APP = an applicationName, or "default"
+  xr-tweak unset APP [key ...]             drop keys, or the whole section
+  xr-tweak apps [--json]                   applicationNames the layer has seen (from its log)
+
+Keys: enabled (0/1), scale (0.05-4, multiplies the recommended per-eye size), width / height (explicit
+per-eye size, wins over scale), sharpen (0-1, RCAS strength; 0 = off), foveation (valve | off | low |
+medium | high; default valve = untouched).
+
+Foveation reaches ONLY apps that call XR_FB_foveation themselves (Godot/Unity/Unreal builds with
+foveation on; `xr-tweak apps` shows fb_foveation=1 once the app has run). Everything else is
+foveated, or not, by Valve's own fdm_injection layer, whose only control is Steam > the game's
+Properties > Foveated Rendering (on/off) — xr-tweak cannot drive it. Valve's layer loads ABOVE xr-tweak
+(nearer the app); the start log line says where it was (valve_fdm=above/below/absent).
+
+Kill switch: XR_TWEAK_DISABLE=<anything> in an app's environment and the loader never loads the layer
+(the manifest's disable_environment). In Steam: launch options "XR_TWEAK_DISABLE=1 %command%".
+Per app without env: `xr-tweak set "<app>" enabled=0`.
+
+Files: lib ~/.local/share/xr-tweak/libxr_tweak.so · manifest
+~/.local/share/openxr/1/api_layers/implicit.d/xr_tweak.json · config ~/.config/xr-tweak/config.ini
+($XR_TWEAK_CONFIG overrides) · log ~/.local/state/xr-tweak/xr-tweak.log. Doc: README.md.
+"""
+
+import argparse
+import configparser
+import hashlib
+import json
+import os
+import pathlib
+import platform
+import re
+import shutil
+import sys
+
+ROOT = pathlib.Path(os.path.realpath(__file__)).parents[1]
+LAYER_DIR = ROOT
+LAYER_NAME = "XR_APILAYER_FRAMECOMMONS_xr_tweak"
+KEYS = {"enabled", "scale", "width", "height", "sharpen", "foveation"}
+FOVEATION = {"valve": "valve", "off": "off", "none": "off", "low": "low", "medium": "medium", "med": "medium",
+             "high": "high"}
+VALVE_TOGGLE = ("Valve's fdm_injection layer decides for apps without XR_FB_foveation: "
+                "Steam > the game's Properties > Foveated Rendering (on/off); xr-tweak cannot drive it")
+
+
+def home() -> pathlib.Path:
+    return pathlib.Path(os.environ.get("HOME", "~")).expanduser()
+
+
+def xdg(var: str, default: str) -> pathlib.Path:
+    v = os.environ.get(var)
+    return pathlib.Path(v) if v else home() / default
+
+
+def paths() -> dict:
+    cfg = os.environ.get("XR_TWEAK_CONFIG") or str(xdg("XDG_CONFIG_HOME", ".config") / "xr-tweak" / "config.ini")
+    return {
+        # not ~/.local/lib: on the Frame that directory can be root's (a system extension's)
+        "lib": xdg("XDG_DATA_HOME", ".local/share") / "xr-tweak" / "libxr_tweak.so",
+        "manifest": xdg("XDG_DATA_HOME", ".local/share") / "openxr" / "1" / "api_layers" / "implicit.d" / "xr_tweak.json",
+        "config": pathlib.Path(cfg),
+        "log": xdg("XDG_STATE_HOME", ".local/state") / "xr-tweak" / "xr-tweak.log",
+    }
+
+
+def elf_arch(p: pathlib.Path) -> str:
+    try:
+        b = p.read_bytes()[:20]
+    except OSError:
+        return "missing"
+    if b[:4] != b"\x7fELF":
+        return "not-elf"
+    return {0xB7: "aarch64", 0x3E: "x86_64"}.get(int.from_bytes(b[18:20], "little"), "other")
+
+
+def sha(p: pathlib.Path) -> str:
+    try:
+        return hashlib.sha256(p.read_bytes()).hexdigest()[:12]
+    except OSError:
+        return ""
+
+
+def out(args, obj, text):
+    if getattr(args, "json", False):
+        print(json.dumps(obj, indent=1, default=str))
+    else:
+        print(text)
+
+
+# ------------------------------------------------------------------------------------- config
+
+def load_cfg(path: pathlib.Path) -> configparser.ConfigParser:
+    cp = configparser.ConfigParser(interpolation=None, strict=False)
+    cp.optionxform = str
+    if path.exists():
+        cp.read(path)
+    return cp
+
+
+def section_name(app: str) -> str:
+    return "default" if app == "default" else f"app:{app}"
+
+
+def parse_value(k: str, v: str):
+    if k == "foveation":
+        if v not in FOVEATION:
+            raise ValueError(v)
+        return FOVEATION[v]
+    if k == "enabled":
+        return v not in ("0", "false", "off", "no")
+    if k in ("width", "height"):
+        return int(v)
+    return float(v)
+
+
+def effective(cp: configparser.ConfigParser, app: str) -> dict:
+    """Mirror of src/config.cpp tweak_parse (the layer is the authority; tests compare the two)."""
+    eff = {"enabled": True, "scale": 1.0, "width": 0, "height": 0, "sharpen": 0.0, "foveation": "valve"}
+    src = []
+    for sec in ("default", f"app:{app}" if app != "default" else None):
+        if not sec or not cp.has_section(sec):
+            continue
+        src.append(f"[{sec}]")
+        for k, v in cp.items(sec):
+            if k not in KEYS:
+                continue
+            try:
+                val = parse_value(k, v.strip())
+            except ValueError:
+                continue
+            if k == "scale" and not (0.05 < val <= 4.0):
+                continue
+            if k == "sharpen":
+                val = min(1.0, max(0.0, val))
+            eff[k] = val
+    eff["sections"] = "".join(src) or "none"
+    return eff
+
+
+def validate(k: str, v: str) -> str:
+    if k not in KEYS:
+        raise SystemExit(f"xr-tweak: unknown key {k!r} (keys: {', '.join(sorted(KEYS))})")
+    try:
+        val = parse_value(k, v)
+    except ValueError:
+        if k == "foveation":
+            raise SystemExit(f"xr-tweak: foveation={v!r}: one of valve, off, low, medium, high")
+        raise SystemExit(f"xr-tweak: {k}={v!r} is not a number")
+    if k == "foveation":
+        return val
+    if k == "scale" and not (0.05 < val <= 4.0):
+        raise SystemExit("xr-tweak: scale must be in (0.05, 4]")
+    if k == "sharpen" and not (0.0 <= val <= 1.0):
+        raise SystemExit("xr-tweak: sharpen must be in [0, 1]")
+    if k in ("width", "height") and not (0 <= val <= 8192):
+        raise SystemExit(f"xr-tweak: {k} must be in [0, 8192] (0 = use scale)")
+    return v
+
+
+def write_cfg(cp, path: pathlib.Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        f.write("# xr-tweak config (xr-tweak writes this; hand edits are fine). Doc: README.md\n")
+        cp.write(f)
+    os.replace(tmp, path)
+
+
+# ------------------------------------------------------------------------------------- verbs
+
+def cmd_status(args):
+    p = paths()
+    man = None
+    if p["manifest"].exists():
+        try:
+            man = json.loads(p["manifest"].read_text())
+        except ValueError:
+            man = {"error": "manifest is not JSON"}
+    libpath = pathlib.Path((man or {}).get("api_layer", {}).get("library_path", p["lib"]))
+    log_tail = []
+    if p["log"].exists():
+        log_tail = p["log"].read_text(errors="replace").splitlines()[-5:]
+    st = {
+        "installed": bool(man) and libpath.exists(),
+        "manifest": str(p["manifest"]) if man else None,
+        "library": str(libpath) if libpath.exists() else None,
+        "library_arch": elf_arch(libpath) if libpath.exists() else None,
+        "library_sha": sha(libpath) or None,
+        "machine": platform.machine(),
+        "config": str(p["config"]),
+        "config_exists": p["config"].exists(),
+        "kill_switch_in_this_env": "XR_TWEAK_DISABLE" in os.environ,
+        "log": str(p["log"]),
+        "log_tail": log_tail,
+    }
+    lines = [
+        f"installed: {'yes' if st['installed'] else 'no'}"
+        + (f"  ({st['library']}, {st['library_arch']}, sha {st['library_sha']})" if st["installed"] else ""),
+        f"manifest:  {st['manifest'] or '-'}",
+        f"config:    {st['config']}{'' if st['config_exists'] else '  (absent: every app gets defaults = no change)'}",
+        f"kill switch set here: {'YES' if st['kill_switch_in_this_env'] else 'no'}",
+    ]
+    if st["installed"] and st["library_arch"] != st["machine"] and st["machine"] in ("aarch64", "x86_64"):
+        lines.append(f"WARNING: layer is {st['library_arch']} but this machine is {st['machine']}")
+    if log_tail:
+        lines.append("last log lines:")
+        lines += ["  " + l for l in log_tail]
+    out(args, st, "\n".join(lines))
+    return 0
+
+
+def default_lib() -> pathlib.Path:
+    return LAYER_DIR / "out" / platform.machine() / "libxr_tweak.so"
+
+
+def cmd_install(args):
+    p = paths()
+    src = pathlib.Path(args.lib) if args.lib else default_lib()
+    if not src.exists():
+        print(f"xr-tweak: no layer library at {src} — build it with ./build.sh "
+              f"(or pass --lib)", file=sys.stderr)
+        return 1
+    arch = elf_arch(src)
+    if arch not in ("aarch64", "x86_64"):
+        print(f"xr-tweak: {src} is not an aarch64/x86_64 ELF ({arch})", file=sys.stderr)
+        return 1
+    if arch != platform.machine() and not args.force:
+        print(f"xr-tweak: {src} is {arch} but this machine is {platform.machine()}; "
+              f"--force to install anyway", file=sys.stderr)
+        return 1
+    p["lib"].parent.mkdir(parents=True, exist_ok=True)
+    tmp = p["lib"].with_suffix(".so.tmp")
+    shutil.copyfile(src, tmp)
+    os.chmod(tmp, 0o755)
+    os.replace(tmp, p["lib"])   # atomic: a running app keeps its mapped copy
+    tmpl = (LAYER_DIR / "xr_tweak.json.in").read_text()
+    p["manifest"].parent.mkdir(parents=True, exist_ok=True)
+    p["manifest"].write_text(tmpl.replace("@LIBRARY_PATH@", str(p["lib"])))
+    res = {"installed": True, "library": str(p["lib"]), "arch": arch, "sha": sha(p["lib"]),
+           "manifest": str(p["manifest"])}
+    out(args, res, f"installed {p['lib']} ({arch}, sha {res['sha']})\nmanifest  {p['manifest']}\n"
+                   f"takes effect at the next OpenXR app start; nothing running was touched")
+    return 0
+
+
+def cmd_uninstall(args):
+    p = paths()
+    gone = []
+    for k in ("manifest", "lib"):
+        if p[k].exists():
+            p[k].unlink()
+            gone.append(str(p[k]))
+    out(args, {"removed": gone}, "removed:\n  " + "\n  ".join(gone) if gone else "nothing installed")
+    return 0
+
+
+def cmd_show(args):
+    p = paths()
+    cp = load_cfg(p["config"])
+    app = args.app or "default"
+    eff = effective(cp, app)
+    eff["app"] = app
+    seen = seen_apps(p).get(app) if app != "default" else None
+    eff["fb_foveation"] = None if not seen else seen.get("fb_foveation")
+    note = ""
+    if eff["foveation"] != "valve":
+        if eff["fb_foveation"] == "0":
+            note = (f"\nNOTE: {app!r} ran without XR_FB_foveation (last seen {seen['last_seen']}): foveation="
+                    f"{eff['foveation']} will do nothing for it. {VALVE_TOGGLE}.")
+        elif eff["fb_foveation"] is None:
+            note = (f"\nnote: foveation applies only if the app uses XR_FB_foveation; its next start logs "
+                    f"fb_foveation=0/1 (xr-tweak apps). {VALVE_TOGGLE}.")
+    out(args, eff, f"{app}: " + " ".join(f"{k}={eff[k]}" for k in ("enabled", "scale", "width", "height", "sharpen",
+                                                                   "foveation"))
+        + f"   (from {eff['sections']}; {p['config']})" + note)
+    return 0
+
+
+def cmd_set(args):
+    p = paths()
+    cp = load_cfg(p["config"])
+    sec = section_name(args.app)
+    if not cp.has_section(sec):
+        cp.add_section(sec)
+    for kv in args.pairs:
+        if "=" not in kv:
+            raise SystemExit(f"xr-tweak: expected key=value, got {kv!r}")
+        k, v = (s.strip() for s in kv.split("=", 1))
+        cp.set(sec, k, validate(k, v))
+    write_cfg(cp, p["config"])
+    return cmd_show(argparse.Namespace(app=args.app, json=args.json))
+
+
+def cmd_unset(args):
+    p = paths()
+    cp = load_cfg(p["config"])
+    sec = section_name(args.app)
+    if cp.has_section(sec):
+        if args.keys:
+            for k in args.keys:
+                cp.remove_option(sec, k)
+        else:
+            cp.remove_section(sec)
+        write_cfg(cp, p["config"])
+    return cmd_show(argparse.Namespace(app=args.app, json=args.json))
+
+
+LOG_RE = re.compile(r'^(\S+) pid=(\d+) app="([^"]*)" engine="([^"]*)" config=\S* sections=(\S+) (.*)$')
+
+
+FIELD_RE = re.compile(r'(\w+)=(\S+)')
+
+
+def seen_apps(p) -> dict:
+    """applicationName -> its latest start line, with the foveation read-out split out."""
+    seen = {}
+    if p["log"].exists():
+        for line in p["log"].read_text(errors="replace").splitlines():
+            m = LOG_RE.match(line)
+            if m:
+                f = dict(FIELD_RE.findall(m.group(6)))
+                seen[m.group(3)] = {"app": m.group(3), "engine": m.group(4), "last_seen": m.group(1),
+                                    "sections": m.group(5), "applied": m.group(6),
+                                    "fb_foveation": f.get("fb_foveation"), "valve_fdm": f.get("valve_fdm")}
+    return seen
+
+
+def cmd_apps(args):
+    p = paths()
+    rows = sorted(seen_apps(p).values(), key=lambda r: r["last_seen"], reverse=True)
+    text = "\n".join(f"{r['last_seen']}  {r['app']!r}  engine={r['engine']!r}  {r['applied']}" for r in rows) \
+        or f"no app has started with the layer yet ({p['log']})"
+    out(args, rows, text)
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="xr-tweak", description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    def add(name, fn, **kw):
+        s = sub.add_parser(name, **kw)
+        s.add_argument("--json", action="store_true")
+        s.set_defaults(fn=fn)
+        return s
+    add("status", cmd_status, help="installed? which .so, config, last log lines")
+    s = add("install", cmd_install, help="install the layer for this machine's arch")
+    s.add_argument("--lib", help="layer .so to install (default out/<arch>/libxr_tweak.so)")
+    s.add_argument("--force", action="store_true", help="install even if the .so arch differs from this machine")
+    add("uninstall", cmd_uninstall, help="remove the manifest and library")
+    s = add("show", cmd_show, help="effective settings for an app")
+    s.add_argument("app", nargs="?")
+    s = add("set", cmd_set, help="set keys for an app (or 'default')")
+    s.add_argument("app")
+    s.add_argument("pairs", nargs="+", metavar="key=value")
+    s = add("unset", cmd_unset, help="remove keys, or the whole section")
+    s.add_argument("app")
+    s.add_argument("keys", nargs="*")
+    add("apps", cmd_apps, help="applicationNames the layer has seen")
+    args = ap.parse_args(argv)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

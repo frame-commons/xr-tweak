@@ -1,0 +1,17 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      # build.sh test: builds the Debian bookworm image (OpenXR-SDK loader from source, lavapipe), both
+      # arches, then test/run_tests.py (real loader, stub runtime, a Vulkan test app) and test/test_cli.py
+      - run: ./build.sh test

@@ -1,0 +1,4 @@
+manifest: 0
+provides: [tooling]
+runs_on: headset
+install: "./build.sh build && bin/xr-tweak install"

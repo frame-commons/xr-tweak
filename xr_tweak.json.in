@@ -1,0 +1,11 @@
+{
+    "file_format_version": "1.0.0",
+    "api_layer": {
+        "name": "XR_APILAYER_FRAMECOMMONS_xr_tweak",
+        "library_path": "@LIBRARY_PATH@",
+        "api_version": "1.0",
+        "implementation_version": "1",
+        "description": "xr-tweak: per-app render resolution, RCAS sharpening and XR_FB_foveation level",
+        "disable_environment": "XR_TWEAK_DISABLE"
+    }
+}
