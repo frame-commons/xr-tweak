@@ -27,7 +27,7 @@ is the Steam client's per-game **Properties > Foveated Rendering** checkbox, whi
 
 - **Sharpening strength is steep.** RCAS divides by `4·lobe + 1`, so the effect is far from linear in the
   dial. On the test's blurred step, `sharpen = 0.3` changed the image by 2 levels in total and `1.0` by 38.
-  Start around 0.6 to 0.8.
+  Start around 0.7 and try 1.0.
 - **Sharpening keeps edges honest.** On the same step, the steepest step went from 32 to 38 levels with
   the 10-90 % rise no wider, the plateaus untouched, alpha byte-identical, and no ringing beyond 3 % of
   the step. RCAS is robust, not halo-free: one run measured a 2-level overshoot (194 over 192).
@@ -39,17 +39,24 @@ is the Steam client's per-game **Properties > Foveated Rendering** checkbox, whi
 - **The sharpening pass takes a median 2.3 ms of GPU time per frame on the Frame, but the app pays about
   4.5 ms.** Measured with the layer's own timestamps (see "Logs and privacy") in the same test field, on a
   stand, at 1728x1728 per eye in sRGB, both eyes in one pass: median 2.32, 2.36 and 2.35 ms in three
-  one-minute runs, p90 about 7 ms. The strength makes no difference. At `scale = 1.2` (2074x2074) the
+  one-minute runs, p90 about 7 ms. Worn, it was 2.41 and 2.43 ms with a p90 of 2.5 ms. The strength makes
+  no difference. At `scale = 1.2` (2074x2074) the
   median was 8.7 ms, far more than the 1.44 times the pixels would explain. The timestamps are wall time on
   a GPU the app and the compositor share, so they include any time our pass waits behind other work.
   The app's own GPU timer rose more than our pass takes, from 13.7 ms per frame with sharpening off to
   18.2-18.5 ms with it on, in four of five sessions; in one session it did not rise at all. We have not
-  found out why. The scene ran at half rate (45 of 90 fps) either way. For an app that just makes 90 fps,
+  found out why. Worn, it did not rise: 12.2 ms with no layer, 12.3 and 11.9 ms with sharpening at 0.7 and
+  1.0. The scene ran at half rate (45 of 90 fps) either way. For an app that just makes 90 fps,
   sharpening is enough to drop it to half rate.
 - **Resolution override and sharpening with foveation run on the Frame.** At `scale = 0.8` and `1.2` the
   app's swapchains became 1382 and 2074 px per eye (from 1728), and with `foveation = high` the level
   rewrite and sharpening both ran, with no errors. How the periphery looks with both on is not judged yet.
-- **Not judged yet:** how sharpening looks on the Frame.
+- **How it looks, one viewer.** One person wore the Frame for three one-minute launches of the test field
+  (signs with text, fences, grass, resolution charts): sharpening off, then 0.7, then 1.0. They knew the
+  last two had sharpening on, not which strength. They liked 1.0 best. At 0.7 and at 1.0 they saw faint
+  lines, fixed to their view, crossing the text, with a little aliasing as the lines moved against it. We do not
+  know yet whether sharpening makes those lines or only makes the runtime's foveation visible. One viewer
+  and one scene; your eyes and your app decide.
 
 ## Install
 
