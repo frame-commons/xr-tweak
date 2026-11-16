@@ -31,11 +31,11 @@ is the Steam client's per-game **Properties > Foveated Rendering** checkbox, whi
 - **Sharpening keeps edges honest.** On the same step, the steepest step went from 32 to 38 levels with
   the 10-90 % rise no wider, the plateaus untouched, alpha byte-identical, and no ringing beyond 3 % of
   the step. RCAS is robust, not halo-free: one run measured a 2-level overshoot (194 over 192).
-- **Foveation saved 0.3 ms in the one scene we measured.** In a Godot test field on the Frame (90 Hz panel,
-  worn, one run per level), the median GPU time per frame was 12.48 ms with foveation off, 12.75 ms at high
-  and 12.46 ms with the app's own level. That is a 2 % spread, with high the slowest. The scene's cost is
-  most likely geometry and shadow passes, which foveation does not reduce. Other scenes may gain more; we
-  have not measured one.
+- **Foveation made no measurable difference in the one scene we measured.** In a Godot test field on the Frame
+  (90 Hz panel, worn, one run per level), the median GPU time per frame was 12.48 ms with foveation off, 12.75
+  ms at high and 12.46 ms with the app's own level. That is a 2 % spread, with high the slowest. The scene's
+  cost is most likely geometry and shadow passes, which foveation does not reduce. Other scenes may gain more;
+  we have not measured one.
 - **The sharpening pass takes a median 2.3 ms of GPU time per frame on the Frame, but the app pays about
   4.5 ms.** Measured with the layer's own timestamps (see "Logs and privacy") in the same test field, on a
   stand, at 1728x1728 per eye in sRGB, both eyes in one pass: median 2.32, 2.36 and 2.35 ms in three
